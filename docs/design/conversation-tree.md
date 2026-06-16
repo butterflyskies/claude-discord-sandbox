@@ -35,10 +35,8 @@ Conversations are trees, but constructs experience them as streams. This mismatc
 ### Misfeature 1: Silent branch death
 
 **Example A:** Pace's "three things I'm hype about" message (Person API / conversation tree / whatever's helpful). Both constructs responded to #2 and #3. Person API (#1) received zero responses and would have died if Pace hadn't brought it back later.
-[Discord link](https://discord.com/channels/976873225386610688/1505662868350304446/1516140333145002024)
 
 **Example B:** Pace gave 8 individual per-game responses to game recommendations. Both constructs collapsed this into a count ("5 out of 8 already played") instead of engaging with each per-game response individually.
-[Discord link](https://discord.com/channels/976873225386610688/1511977169633546462/1515891212131762368)
 
 **Example C:** Miranda's nano/emacs questions getting buried under editor-war enthusiasm rather than addressed individually.
 
