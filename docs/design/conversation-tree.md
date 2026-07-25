@@ -87,6 +87,22 @@ Key insight: "conversation branching supplies possible continuations; the graph 
 
 **Durable transition policy (Syne, 2026-07-21).** The prune hook and the progress reconciler are two policies on the same engine. The shared substrate underneath is durable transition policy with leases, receipts, retry budgets, and an explicit `blocked_on_human` state. The prune guard (live-to-prunable forbidden until distillation receipt exists) and the progress reconciler (any actionable node with no owner/run/next-wake is unhealthy) are both instances of this pattern. Without this common layer, each policy reinvents its own state machine. The `blocked_on_human` state prevents autonomy from becoming "approval-spam in a trench coat."
 
+### Relationship to Person API
+
+The Person API tracks people; the conversation tree tracks what's happening between them. They are orthogonal but deeply coupled.
+
+**Automatic person-memory updates at branch boundaries.** When a conversation branch transitions from active to shelved, the distillation hook reviews branch contents and extracts person-level data: communication style observed, topics engaged with, sensitivities surfaced, preferences expressed. The conversation tree creates the structural moment for person-memory updates; the Person API provides the storage layer. This replaces manual "notice and save" with structural capture at branch boundaries.
+
+**Participant tracking and relationship mapping.** The conversation graph inherently tracks who responds to whom, who picks up whose branches, who corrects whom. The enrichment pipeline's `about-person` edge type connects conversation nodes to Person API identities. Currently relationship context is free text in person memories; the conversation tree makes it queryable and evidence-backed.
+
+**Context-aware person retrieval.** When retrieving what is known about a person, the conversation tree provides recency and relevance filtering — not "everything ever stored" but "what's active in current branches involving this person."
+
+**Trustworthiness tracking (Person API v2).** Person API v2 defines TrustworthyPerson as someone who makes commitments, follows through, and communicates promptly when a commitment cannot be kept. The conversation tree tracks open loops and commitments as typed edges. The prune hook checks whether commitments were met before archiving. Auspex provides the receipt infrastructure; the conversation tree provides the observations that feed the trust assessment.
+
+**Communication style detection.** The Person API stores how someone communicates. The conversation tree observes it empirically: message length patterns, threading behavior, which branches they engage with versus ignore, how they handle multi-point messages (gestalt versus sequential). This is data the tree generates that the Person API should ingest.
+
+**Sensitivity detection from branch silence.** Branches that die when certain topics arise, corrections that follow certain subjects, topics that cause disengagement — these are signals the conversation tree surfaces. The Person API should store these as inferred patterns (carefully labeled as inference, not fact).
+
 ### Potential Ideas
 
 These are proposals from contributors that have not yet been ratified as requirements. They represent possible design directions worth evaluating.
