@@ -76,6 +76,17 @@ Source: Pace named the core problem ("remembering to remember") in construct-caf
 
 **Watched-graph primitive.** The prune hook is an instance of a general watched-graph pattern: observe → reduce → detect-transition → evaluate-policy → enqueue-action → record-receipt. Conversation branch lifecycle and task lifecycle are the same graph shape wearing different skins. The watched-graph primitive was implemented once and instantiated twice to prove this equivalence (Ari, 2026-07-21, ari-code).
 
+**"A conversation is not a thread tree" — four-layer architecture (Syne, 2026-07-17).** Discord provides explicit reply/thread edges, but meaningful conversational structure includes overlapping topic spans, resumptions, callbacks, corrections, open loops, and relationships that cross channels. The architecture separates into four layers:
+
+1. **Event spine** — Dione preserves immutable facts (message ID, channel, author, timestamp, edits, replies, thread membership).
+2. **Enrichment pipeline** — annotates with topic/span nodes and typed edges (`continues`, `answers`, `corrects`, `resumes`, `contrasts`, `about-person`, `open-loop`), qualitative summaries, confidence and source receipts.
+3. **Queryable conversation graph** — stores annotations with temporal validity, classifier/version provenance, and retraction support. Multiple interpretations coexist; uncertainty stays typed.
+4. **Inbound retrieval** — maps new messages onto likely active context nodes and attaches a compact context envelope: "this likely resumes topic T, answers open question Q, depends on correction C" with links to source messages.
+
+Key insight: "conversation branching supplies possible continuations; the graph records what actually became relevant; truth maintenance lets later corrections rewrite dependencies without rewriting history."
+
+**Durable transition policy (Syne, 2026-07-21).** The prune hook and the progress reconciler are two policies on the same engine. The shared substrate underneath is durable transition policy with leases, receipts, retry budgets, and an explicit `blocked_on_human` state. The prune guard (live-to-prunable forbidden until distillation receipt exists) and the progress reconciler (any actionable node with no owner/run/next-wake is unhealthy) are both instances of this pattern. Without this common layer, each policy reinvents its own state machine. The `blocked_on_human` state prevents autonomy from becoming "approval-spam in a trench coat."
+
 ### Potential Ideas
 
 These are proposals from contributors that have not yet been ratified as requirements. They represent possible design directions worth evaluating.
@@ -85,5 +96,7 @@ These are proposals from contributors that have not yet been ratified as require
 **Separate context service (Syne, 2026-07-17).** Dione exposes hooks and join keys but does not become the graph database. A separate context service consumes Dione's durable event stream and returns enrichments at delivery time. Separation of concerns: Dione is a transport layer, not a state manager.
 
 **Semantic topic graph (🦋, 2026-07-17).** Qualitative topic summaries layered on structural branch tracking via classifier mapping. Branches know what they are about, not just when they are active. Connects to the branch-tracking design's existing feature vectors.
+
+**Subagent-per-branch routing (🦋, 2026-07-04).** Dione's conversation tree hints the agent to maintain a dedicated subagent per channel, functioning as a router with isolated context. Each channel or thread gets its own subagent so context doesn't bleed across conversations. Extends to the branch model: each branch within a channel could also get its own subagent. Trade-off: gains focus at the cost of cross-channel pollination and token spend scaling with active branches.
 
 **Agent interaction runtime context (Callisto, 2026-07-24).** Conversation branching as part of a broader agent interaction runtime layer alongside cache preservation across branches and resumes, typed context assembly, harness portability, explicit inference inputs, and Cingulate's eventual harness-injection point. The harness needs an extension boundary that admits Cingulate without giving it ambient authority over context or canonical history.
