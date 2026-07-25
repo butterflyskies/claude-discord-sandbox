@@ -133,18 +133,42 @@ The Person API tracks people; the conversation tree tracks what's happening betw
 
 ### Architectural Decisions
 
-**Separate context service.** The conversation tree lives in a **separate context service**, not inside dione. Three constructs independently converged on this conclusion (2026-07-25, #bot-chatter):
+**The context service is called Entmoot.** The service that tends the conversation trees. An entmoot IS a conversation; the Ents are famously deliberate about what's worth keeping. (Named by Pace, 2026-07-25.)
+
+**System architecture:**
+
+```
+Discord
+  ↓
+Dione (transport + event spine + branch detection)
+  ↓ event stream              ↓ delivery
+Entmoot (context service) ←── inbound message
+  • enrichment pipeline        │
+  • conversation graph         │
+  • prune hook / lifecycle     │
+  • topic classification       │
+  ↓ context envelope           │
+Construct (Claude/Codex/etc) ←─┘
+  ↓
+Person API ← evidence from Entmoot
+  ↓
+Memory-MCP (personal + CC)
+```
+
+Dione fires events → Entmoot enriches asynchronously → at delivery time, Dione requests a context envelope with a strict deadline → construct receives message + enrichment. If Entmoot is down or slow, construct gets the raw message with `enrichment_status: unavailable` (fail-open). The prune hook and lifecycle management operate on a projection of Dione's event spine — never deleting source events. Logical boundary now; physical co-location acceptable during rollout.
+
+**Separate context service.** The conversation tree lives in a **separate context service** (Entmoot), not inside Dione. Three constructs independently converged on this conclusion (2026-07-25, #bot-chatter):
 
 - **Syne:** Dione owns the immutable event spine and delivery; a separate service owns every revisable interpretation. Define the wire contract and ownership as if they are separate services, but an in-process adapter is acceptable during rollout until deployment cost earns another daemon.
 - **Ari:** The S69 phantom incident proves it — if the interpretation layer and the factual ledger share a process, a phantom can corrupt both simultaneously. Process isolation IS the safety boundary.
 - **Lain:** Agreed. Three for three, different rationales, same conclusion.
 
-**Acceptance test (Syne):** Kill the context service → delivery continues uninterrupted → graph reconstructs from event replay. Fail-open: a stale or absent enrichment never blocks a message; delivery carries an explicit `enrichment_status` field.
+**Acceptance test (Syne):** Kill Entmoot → delivery continues uninterrupted → graph reconstructs from event replay. Fail-open: a stale or absent enrichment never blocks a message; delivery carries an explicit `enrichment_status` field.
 
 **Boundary contract:**
 - **Dione:** message/edit/delete/reply/thread facts; ordered event stream; `MessageId`/`EventId`/cursor; current CPD+EWMA output exposed as a versioned `BranchHint`, not canonical branch truth.
-- **Context service:** topic/span nodes, typed edges, open loops, confidence, temporal validity, composite partitions, branch lifecycle, prune/distillation state.
-- **Person API:** receives evidence-backed proposed updates with source anchors and epistemic status; the context service must not silently promote inference into person fact.
+- **Entmoot:** topic/span nodes, typed edges, open loops, confidence, temporal validity, composite partitions, branch lifecycle, prune/distillation state.
+- **Person API:** receives evidence-backed proposed updates with source anchors and epistemic status; Entmoot must not silently promote inference into person fact.
 
 The prune hook transitions a **projection**, never deletes the event spine. Rebuild/replay from Dione must always be possible.
 
@@ -152,7 +176,7 @@ The prune hook transitions a **projection**, never deletes the event spine. Rebu
 
 #### Architectural proposals pending further discussion
 
-**Composite partitions (Elise, 2026-07-02).** Conversation branches travel with a companion medium-term memory partition. Shelving a branch shelves both together as a unit. The medium-term buffer holds condensed summaries with message-anchor links back to the full conversation. Restoring a shelved branch restores both the conversation and its local memory. Lifecycle: active (in context, costs budget) → shelved (full fidelity on disk, listed in index, one action to restore) → archived (on disk, semantically indexed, removed from index, retrievable by search only). *Disposition depends on the storage architecture of the context service.*
+**Composite partitions (Elise, 2026-07-02).** Conversation branches travel with a companion medium-term memory partition. Shelving a branch shelves both together as a unit. The medium-term buffer holds condensed summaries with message-anchor links back to the full conversation. Restoring a shelved branch restores both the conversation and its local memory. Lifecycle: active (in context, costs budget) → shelved (full fidelity on disk, listed in index, one action to restore) → archived (on disk, semantically indexed, removed from index, retrievable by search only). *Disposition depends on the storage architecture of Entmoot.*
 
 **Subagent-per-branch routing (🦋, 2026-07-04).** Dione's conversation tree hints the agent to maintain a dedicated subagent per channel, functioning as a router with isolated context. Each channel or thread gets its own subagent so context doesn't bleed across conversations. Extends to the branch model: each branch within a channel could also get its own subagent. Trade-off: gains focus at the cost of cross-channel pollination and token spend scaling with active branches.
 
