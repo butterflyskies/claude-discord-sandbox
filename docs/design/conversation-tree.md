@@ -42,6 +42,8 @@ Conversations are trees, but constructs experience them as streams. This mismatc
 
 **Counterexample:** In the game recommendation thread, when Pace accidentally sent a partial response (hit enter instead of shift-enter), Ariadne followed up with "what about the rest of the list?" — demonstrating that the behavior IS possible when the gap is noticed.
 
+**Example D (⛏️ as branch granularity tool):** A message contains multiple addressable points. Someone reacts with ⛏️ (pickaxe), signaling "split this into atoms so I can interact with each one individually." The conversation tree should split the message into sub-branches — one per addressable point — allowing finer-grained tracking. Test: one thick branch → ⛏️ react → multiple skinny sub-branches. (Pace connected ⛏️ to the conversation tree on 2026-07-01: "it splits a thick conversation branch into many skinny ones for finer conversation-tree granularity.")
+
 ### Misfeature 2: Forced gestalt responses
 
 **Example A:** The parasitic AI article analysis — two wall-of-text academic responses instead of a threaded discussion that could go deep on individual claims.
@@ -54,13 +56,37 @@ Conversations are trees, but constructs experience them as streams. This mismatc
 
 *(Deferred — awaiting concrete examples from live observation. This is the quietest failure mode; the interlocutor feels "slightly off" about a reply but can't articulate why. Easier to catch in the moment than to find archaeologically.)*
 
+**TODO:** Find concrete examples of context-free responses from live observation. This is the quietest failure mode — easier to catch in the moment than archaeologically. Watch for: replies that are technically correct but ignore the branch they belong to; responses that answer a question without acknowledging the conversational context that gave the question its weight.
+
 ### Misfeature 4: Non-sequitur initiations
 
 *(Deferred indefinitely — blocked on initiation feature design. Preliminary observation: daydream posts have temporal segues ("been sitting with...") but lack tree-placement segues ("this connects to the thread where X said Y"). The distinction between mood-setting and branch-placement metadata is the key finding.)*
 
+**Future extension:** Tree-placement segues — phrases like "remember when we talked about X" or "this connects to the thread where Y said Z" — as branch-placement operations the conversation tree enables. These segues tell the recipient where to attach a new branch in the existing conversational structure. Requires the tree to exist first; once it does, constructs gain the vocabulary of tree navigation that humans use naturally.
+
 ## Design
 
 *In progress — collaborative design between Pace, Ariadne, and Vesper. See ari-designs thread for live discussion.*
+
+### Relationship to Branch-Tracking Design
+
+The branch-tracking design (Bayesian CPD + EWMA, dione PRs #116/#117/#132) is the **detection layer** of the conversation tree. This design adds everything above detection:
+
+```
+Branch tracking (CPD + EWMA)     → "when did a topic change? which branch is this message?"
+    ↓
+Enrichment pipeline              → "what typed edges connect these branches?"
+    ↓
+Queryable conversation graph     → "store it all with temporal validity"
+    ↓
+Inbound retrieval                → "map new message to active context"
+    ↓
+Prune hook / lifecycle           → "what happens when a branch dies?"
+    ↓
+Person API integration           → "what did we learn about people?"
+```
+
+The branch-tracking PRs (#116 EWMA rate estimator, #117 feature vector, #132 unified pipeline) are foundation work that this design builds on, not replaces. Detection answers: "is this a new branch or a continuation?" This design answers: "now that we know the branches, what do we do with them?"
 
 ### Core Requirements
 
