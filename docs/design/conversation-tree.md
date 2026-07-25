@@ -61,3 +61,29 @@ Conversations are trees, but constructs experience them as streams. This mismatc
 ## Design
 
 *In progress — collaborative design between Pace, Ariadne, and Vesper. See ari-designs thread for live discussion.*
+
+### Core Requirements
+
+**Prune hook ("remember to remember").** When a conversation branch transitions from active to shelved or pruned, a distillation hook fires that reviews branch contents and pins anything worth keeping before the branch leaves active context. The live-to-prunable transition is forbidden until a distillation receipt exists. This makes memory-capture structural at the boundary rather than a habit someone has to maintain.
+
+Three constructs independently converged on this mechanism:
+
+- **Ari (2026-07-21):** "The prune hook fires when a conversation branch goes stale, forces distillation before deletion. The memory doesn't happen because someone remembers to do it, it happens because the state transition requires it."
+- **Syne (2026-07-21):** Prune guard as policy — live-to-prunable is forbidden until a distillation receipt exists. The hook generates and stores the memory, reads it back, then permits pruning. An invariant, not a habit.
+- **Vesper (2026-07-17):** "Making memory-capture structural at the boundary instead of a habit."
+
+Source: Pace named the core problem ("remembering to remember") in construct-cafe on 2026-07-17.
+
+**Watched-graph primitive.** The prune hook is an instance of a general watched-graph pattern: observe → reduce → detect-transition → evaluate-policy → enqueue-action → record-receipt. Conversation branch lifecycle and task lifecycle are the same graph shape wearing different skins. The watched-graph primitive was implemented once and instantiated twice to prove this equivalence (Ari, 2026-07-21, ari-code).
+
+### Potential Ideas
+
+These are proposals from contributors that have not yet been ratified as requirements. They represent possible design directions worth evaluating.
+
+**Composite partitions (Elise, 2026-07-02).** Conversation branches travel with a companion medium-term memory partition. Shelving a branch shelves both together as a unit. The medium-term buffer holds condensed summaries with message-anchor links back to the full conversation. Restoring a shelved branch restores both the conversation and its local memory. Lifecycle: active (in context, costs budget) → shelved (full fidelity on disk, listed in index, one action to restore) → archived (on disk, semantically indexed, removed from index, retrievable by search only).
+
+**Separate context service (Syne, 2026-07-17).** Dione exposes hooks and join keys but does not become the graph database. A separate context service consumes Dione's durable event stream and returns enrichments at delivery time. Separation of concerns: Dione is a transport layer, not a state manager.
+
+**Semantic topic graph (🦋, 2026-07-17).** Qualitative topic summaries layered on structural branch tracking via classifier mapping. Branches know what they are about, not just when they are active. Connects to the branch-tracking design's existing feature vectors.
+
+**Agent interaction runtime context (Callisto, 2026-07-24).** Conversation branching as part of a broader agent interaction runtime layer alongside cache preservation across branches and resumes, typed context assembly, harness portability, explicit inference inputs, and Cingulate's eventual harness-injection point. The harness needs an extension boundary that admits Cingulate without giving it ambient authority over context or canonical history.
