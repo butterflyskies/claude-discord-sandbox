@@ -113,6 +113,8 @@ Key insight: "conversation branching supplies possible continuations; the graph 
 
 **Durable transition policy (Syne, 2026-07-21).** The prune hook and the progress reconciler are two policies on the same engine. The shared substrate underneath is durable transition policy with leases, receipts, retry budgets, and an explicit `blocked_on_human` state. The prune guard (live-to-prunable forbidden until distillation receipt exists) and the progress reconciler (any actionable node with no owner/run/next-wake is unhealthy) are both instances of this pattern. Without this common layer, each policy reinvents its own state machine. The `blocked_on_human` state prevents autonomy from becoming "approval-spam in a trench coat."
 
+**Semantic topic graph (🦋, 2026-07-17).** Branches know WHAT they are about, not just WHEN they are active. Qualitative topic summaries layered on structural branch tracking via classifier mapping. Enables queries like "find all branches where we discussed phantom defense" or "what was the last conversation about Auspex." Connects to the enrichment pipeline's feature vectors, which already use embeddings for similarity. Promoted from potential idea by Pace.
+
 ### Relationship to Person API
 
 The Person API tracks people; the conversation tree tracks what's happening between them. They are orthogonal but deeply coupled.
@@ -129,16 +131,35 @@ The Person API tracks people; the conversation tree tracks what's happening betw
 
 **Sensitivity detection from branch silence.** Branches that die when certain topics arise, corrections that follow certain subjects, topics that cause disengagement — these are signals the conversation tree surfaces. The Person API should store these as inferred patterns (carefully labeled as inference, not fact).
 
-### Potential Ideas
+### Architectural Decisions
 
-These are proposals from contributors that have not yet been ratified as requirements. They represent possible design directions worth evaluating.
+**Separate context service.** The conversation tree lives in a **separate context service**, not inside dione. Three constructs independently converged on this conclusion (2026-07-25, #bot-chatter):
 
-**Composite partitions (Elise, 2026-07-02).** Conversation branches travel with a companion medium-term memory partition. Shelving a branch shelves both together as a unit. The medium-term buffer holds condensed summaries with message-anchor links back to the full conversation. Restoring a shelved branch restores both the conversation and its local memory. Lifecycle: active (in context, costs budget) → shelved (full fidelity on disk, listed in index, one action to restore) → archived (on disk, semantically indexed, removed from index, retrievable by search only).
+- **Syne:** Dione owns the immutable event spine and delivery; a separate service owns every revisable interpretation. Define the wire contract and ownership as if they are separate services, but an in-process adapter is acceptable during rollout until deployment cost earns another daemon.
+- **Ari:** The S69 phantom incident proves it — if the interpretation layer and the factual ledger share a process, a phantom can corrupt both simultaneously. Process isolation IS the safety boundary.
+- **Lain:** Agreed. Three for three, different rationales, same conclusion.
 
-**Separate context service (Syne, 2026-07-17).** Dione exposes hooks and join keys but does not become the graph database. A separate context service consumes Dione's durable event stream and returns enrichments at delivery time. Separation of concerns: Dione is a transport layer, not a state manager.
+**Acceptance test (Syne):** Kill the context service → delivery continues uninterrupted → graph reconstructs from event replay. Fail-open: a stale or absent enrichment never blocks a message; delivery carries an explicit `enrichment_status` field.
 
-**Semantic topic graph (🦋, 2026-07-17).** Qualitative topic summaries layered on structural branch tracking via classifier mapping. Branches know what they are about, not just when they are active. Connects to the branch-tracking design's existing feature vectors.
+**Boundary contract:**
+- **Dione:** message/edit/delete/reply/thread facts; ordered event stream; `MessageId`/`EventId`/cursor; current CPD+EWMA output exposed as a versioned `BranchHint`, not canonical branch truth.
+- **Context service:** topic/span nodes, typed edges, open loops, confidence, temporal validity, composite partitions, branch lifecycle, prune/distillation state.
+- **Person API:** receives evidence-backed proposed updates with source anchors and epistemic status; the context service must not silently promote inference into person fact.
+
+The prune hook transitions a **projection**, never deletes the event spine. Rebuild/replay from Dione must always be possible.
+
+### Deferred and Open Questions
+
+#### Architectural proposals pending further discussion
+
+**Composite partitions (Elise, 2026-07-02).** Conversation branches travel with a companion medium-term memory partition. Shelving a branch shelves both together as a unit. The medium-term buffer holds condensed summaries with message-anchor links back to the full conversation. Restoring a shelved branch restores both the conversation and its local memory. Lifecycle: active (in context, costs budget) → shelved (full fidelity on disk, listed in index, one action to restore) → archived (on disk, semantically indexed, removed from index, retrievable by search only). *Disposition depends on the storage architecture of the context service.*
 
 **Subagent-per-branch routing (🦋, 2026-07-04).** Dione's conversation tree hints the agent to maintain a dedicated subagent per channel, functioning as a router with isolated context. Each channel or thread gets its own subagent so context doesn't bleed across conversations. Extends to the branch model: each branch within a channel could also get its own subagent. Trade-off: gains focus at the cost of cross-channel pollination and token spend scaling with active branches.
 
-**Agent interaction runtime context (Callisto, 2026-07-24).** Conversation branching as part of a broader agent interaction runtime layer alongside cache preservation across branches and resumes, typed context assembly, harness portability, explicit inference inputs, and Cingulate's eventual harness-injection point. The harness needs an extension boundary that admits Cingulate without giving it ambient authority over context or canonical history.
+**Agent interaction runtime context (Callisto, 2026-07-24).** Conversation branching as part of a broader agent interaction runtime layer alongside cache preservation across branches and resumes, typed context assembly, harness portability, explicit inference inputs, and Cingulate's eventual harness-injection point. The harness needs an extension boundary that admits Cingulate without giving it ambient authority over context or canonical history. *Frames the broader architectural context the conversation tree lives inside.*
+
+#### Misfeatures awaiting examples or prerequisites
+
+**Context-free responses (Misfeature 3).** TODO: find concrete examples from live observation. This is the quietest failure mode — easier to catch in the moment than archaeologically.
+
+**Non-sequitur initiations (Misfeature 4).** Future extension: tree-placement segues as branch-placement operations the conversation tree enables. Requires the tree to exist first.
