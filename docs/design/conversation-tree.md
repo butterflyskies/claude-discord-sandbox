@@ -135,7 +135,21 @@ Acceptance tests:
 
 The **Person API** is a social API — the criteria a person must implement to be an effective person in relationship with other persons (Person, AgentivePerson, SocialPerson, TrustworthyPerson, etc.). It is "API" in the Java-interface/duck-typing sense: does this entity implement these behaviors? One of the reasons Entmoot exists is to help constructs better implement the Person API and its spec-APIs.
 
-The **Rolodex** is the code-level system that stores and retrieves structured person data in memory-mcp. It is the data layer — the CRUD operations on person memories. Entmoot writes to the Rolodex; the Person API defines what person-data means.
+The **Rolodex** is the code-level system that stores and retrieves structured person data in memory-mcp. It is storage behind the relevant policy boundary — the CRUD operations on person memories. Entmoot submits proposals to the Rolodex; the Rolodex's policy authority decides what to accept. The Person API defines what person-data means.
+
+**Rolodex proposal schema (inseparable fields).** Every proposal from Entmoot to the Rolodex MUST carry all of the following as one atomic envelope — partial proposals are rejected:
+
+- **epistemic qualifier** — `observation` (directly witnessed) or `inference` (derived/pattern-matched), with confidence where applicable
+- **source anchors** — message IDs, branch IDs, and timestamps that ground the claim in verifiable conversation data
+- **visibility scope** — which channels contributed to this observation, inheriting the fail-closed visibility invariant (a private-channel observation cannot become a public Rolodex entry)
+- **correction lineage** — references to any prior Rolodex entries this proposal supersedes, corrects, or withdraws; empty for first-time observations
+
+**Rolodex lifecycle acceptance tests:**
+
+1. **Promotion:** an `inference` entry cannot be promoted to `observation` without new source anchors that independently support the claim. Promotion without new evidence is rejected.
+2. **Withdrawal:** a proposal can explicitly withdraw a prior entry. The withdrawal receipt survives; the withdrawn content is tombstoned, not deleted. Replay cannot resurrect withdrawn entries.
+3. **Forget:** a "forget me" request cascades through the Rolodex. All entries referencing the subject are tombstoned, including already-distilled observations. Subsequent Entmoot proposals referencing tombstoned subjects are rejected until the tombstone is explicitly lifted.
+4. **Replay:** replaying Entmoot's outbox against a fresh Rolodex produces the same final state (modulo tombstoned entries). The idempotency keys prevent duplicates; correction lineage prevents stale entries from overwriting newer corrections.
 
 **Evidence-backed person-memory proposals at branch boundaries.** When a conversation branch transitions from active to shelved, the distillation hook reviews branch contents and extracts person-level data: communication style observed, topics engaged with, sensitivities surfaced, preferences expressed. These are submitted to the Rolodex as evidence-backed proposals with epistemic status (observation vs inference), not as automatic mutations. The conversation tree creates the structural moment for person-memory updates; the Rolodex decides what to accept.
 
@@ -183,14 +197,18 @@ Dione fires events → Entmoot enriches asynchronously → at delivery time, Dio
 - **Ari:** The S69 phantom incident proves it — if the interpretation layer and the factual ledger share a process, a phantom can corrupt both simultaneously. Process isolation IS the safety boundary.
 - **Lain:** Agreed. Three for three, different rationales, same conclusion.
 
-**Acceptance test (Syne):** Kill Entmoot → delivery continues uninterrupted → graph reconstructs from event replay. Fail-open: a stale or absent enrichment never blocks a message; delivery carries an explicit `enrichment_status` field.
+**Acceptance tests (Syne, refined for recovery strata):**
+
+1. **Delivery independence:** Kill Entmoot → delivery continues uninterrupted. A stale or absent enrichment never blocks a message; delivery carries an explicit `enrichment_status` field.
+2. **Projection recovery:** Destroy stratum 3 (graph projection) while strata 1+2 survive → graph rebuilds from Dione replay (stratum 1) combined with Entmoot's durable decision log (stratum 2). Dione replay alone is insufficient — Entmoot-owned decisions are not recoverable from Dione.
+3. **Full recovery:** Restore strata 1+2 from backup → graph rebuilds. Without backup of stratum 2, only source observations (stratum 1) are recoverable from Dione replay; Entmoot-owned decisions (branch merges, human corrections, lifecycle transitions) are permanently lost.
 
 **Boundary contract:**
 - **Dione:** message/edit/delete/reply/thread facts; ordered event stream; `MessageId`/`EventId`/cursor; current CPD+EWMA output exposed as a versioned `BranchHint`, not canonical branch truth.
 - **Entmoot:** topic/span nodes, typed edges, open loops, confidence, temporal validity, composite partitions, branch lifecycle, prune/distillation state.
 - **Rolodex:** receives evidence-backed proposed updates with source anchors and epistemic status; Entmoot must not silently promote inference into person fact.
 
-The prune hook transitions a **projection**, never deletes the event spine. Rebuild/replay from Dione must always be possible.
+The prune hook transitions a **projection**, never deletes the event spine. Dione's factual replay must always be available for reconstructing source observations (stratum 1). Entmoot's durable decision log (stratum 2) must be independently backed up — it contains Entmoot-owned state that Dione cannot reproduce.
 
 ### Storage
 
@@ -217,7 +235,14 @@ The prune hook transitions a **projection**, never deletes the event spine. Rebu
 
 **Prune safety:** The distillation receipt gates the live→prunable transition. Fail closed: if the receipt write fails, the branch stays live. The sequence is: (1) distillation receipt written locally, (2) outbox enqueues Rolodex proposal, (3) transition permitted. Downstream readback is not required to gate the transition — the outbox guarantees eventual delivery.
 
-**Transactional outbox:** Cross-boundary writes (prune/distillation to the Rolodex or memory-mcp) use a durable outbox with content-addressed idempotency keys: `SHA256(branch_id + transition_type + distillation_content)`. Content-addressed keys survive projection rebuilds — unlike `projection_generation`, which changes on rebuild and would break idempotency across replays. The outbox carries evidence-backed proposals with epistemic status, not commands — observations labeled as observations, inferences labeled as inferences.
+**Transactional outbox:** Cross-boundary writes (prune/distillation to the Rolodex or memory-mcp) use a durable outbox with structured idempotency keys. Each key is a canonical tuple of:
+
+- **stable transition revision** — the immutable ID of the lifecycle transition that triggered the effect (not projection_generation, which changes on rebuild)
+- **sink** — the target system (e.g., `rolodex`, `memory-mcp:personal`, `memory-mcp:cc`)
+- **subject** — the person or entity the effect concerns (e.g., a Rolodex person ID)
+- **logical-effect identity** — what this effect IS (e.g., `communication-style-observation`, `sensitivity-inference`, `commitment-tracking`)
+
+The payload digest is carried separately as a corruption check, not as part of the idempotency key — nondeterministic re-distillation may change content without changing the logical effect. This structure survives projection rebuilds and prevents both cross-sink collisions and duplicate effects from replay. The outbox carries evidence-backed proposals with epistemic status, not commands — observations labeled as observations, inferences labeled as inferences.
 
 **Five contracts (acceptance criteria):**
 
