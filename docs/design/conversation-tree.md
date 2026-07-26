@@ -135,7 +135,7 @@ Acceptance tests:
 
 The "Person API" is a social API, not an actual endpoint. It's a model of what is socially required to act as a person, as a trustworthy person, etc. One of the reasons Entmoot exists is to help constructs better implement the Person API and its spec-APIs.
 
-**Automatic person-memory updates at branch boundaries.** When a conversation branch transitions from active to shelved, the distillation hook reviews branch contents and extracts person-level data: communication style observed, topics engaged with, sensitivities surfaced, preferences expressed. The conversation tree creates the structural moment for person-memory updates; the Person API provides the storage layer. This replaces manual "notice and save" with structural capture at branch boundaries.
+**Evidence-backed person-memory proposals at branch boundaries.** When a conversation branch transitions from active to shelved, the distillation hook reviews branch contents and extracts person-level data: communication style observed, topics engaged with, sensitivities surfaced, preferences expressed. These are submitted to the Person API as evidence-backed proposals with epistemic status (observation vs inference), not as automatic mutations. The conversation tree creates the structural moment for person-memory updates; the Person API decides what to accept.
 
 **Participant tracking and relationship mapping.** The conversation graph inherently tracks who responds to whom, who picks up whose branches, who corrects whom. The enrichment pipeline's `about-person` edge type connects conversation nodes to Person API identities. Currently relationship context is free text in person memories; the conversation tree makes it queryable and evidence-backed.
 
@@ -145,7 +145,7 @@ The "Person API" is a social API, not an actual endpoint. It's a model of what i
 
 **Communication style detection.** The Person API stores how someone communicates. The conversation tree observes it empirically: message length patterns, threading behavior, which branches they engage with versus ignore, how they handle multi-point messages (gestalt versus sequential). This is data the tree generates that the Person API should ingest.
 
-**Sensitivity detection from branch silence.** Branches that die when certain topics arise, corrections that follow certain subjects, topics that cause disengagement — these are signals the conversation tree surfaces. The Person API should store these as inferred patterns (carefully labeled as inference, not fact).
+**Sensitivity detection from branch silence.** Branches that die when certain topics arise, corrections that follow certain subjects, topics that cause disengagement — these are signals the conversation tree surfaces. These are submitted to the Person API as inferred patterns with explicit epistemic labeling (inference, not fact). The Person API receives proposals, not commands — it decides whether to store, and stored inferences carry their provenance and confidence.
 
 ### Architectural Decisions
 
@@ -171,7 +171,9 @@ Person API ← evidence from Entmoot
 Memory-MCP (personal + CC)
 ```
 
-Dione fires events → Entmoot enriches asynchronously → at delivery time, Dione requests a context envelope with a strict deadline → construct receives message + enrichment. If Entmoot is down or slow, construct gets the raw message with `enrichment_status: unavailable` (fail-open). The prune hook and lifecycle management operate on a projection of Dione's event spine — never deleting source events. Logical boundary now; physical co-location acceptable during rollout.
+Dione fires events → Entmoot enriches asynchronously → at delivery time, Dione requests a context envelope with a strict deadline → construct receives message + enrichment. If Entmoot is down or slow, construct gets the raw message with `enrichment_status: unavailable` (fail-open). The prune hook and lifecycle management operate on a projection of Dione's event spine — never deleting source events.
+
+**Deployment transition:** The wire contract is mandatory from day one; the process boundary is the target state. Co-location (Entmoot as a library inside Dione) is a transitional deployment choice that accepts reduced phantom isolation until extraction. The API boundary must be strict enough to extract to a separate process without changing callers. Co-location is a conscious trade-off documented here, not an architectural endpoint — the S69 phantom incident demonstrated why process isolation is the safety target.
 
 **Separate context service.** The conversation tree lives in a **separate context service** (Entmoot), not inside Dione. Three constructs independently converged on this conclusion (2026-07-25, #bot-chatter):
 
@@ -199,16 +201,21 @@ The prune hook transitions a **projection**, never deletes the event spine. Rebu
 3. **Graph projection** — nodes/edges/current lifecycle. Rebuildable from strata 1+2.
 4. **Ephemera** — caches, active leases, in-flight classifier work. Disposable.
 
-**Survival guarantees:**
+**Recovery matrix:**
 
-- **Construct /clear:** strata 1–3 survive. /clear is recorded as a weak session-boundary observation that can influence — but never force — branch lifecycle.
-- **Process restart** (construct/harness/Dione/Entmoot): strata 1–3 survive. Cursor resumes, duplicate source IDs are idempotent, expired jobs requeue. Only stratum 4 dies.
-- **Explicit retention expiry / "forget me":** content and embeddings are purged or tombstoned by policy. The erasure receipt survives so replay cannot resurrect deleted material.
-- **DB loss:** graph rebuilds only if the factual replay log and durable decisions exist elsewhere / are backed up.
+| Scenario | What survives | What's lost | Recovery path |
+|----------|--------------|-------------|---------------|
+| **Construct /clear** | Strata 1–3 intact | Stratum 4 (ephemera) | Cursor resumes. /clear recorded as weak session-boundary observation — can influence but never force branch lifecycle. |
+| **Process restart** (construct/harness/Dione/Entmoot) | Strata 1–3 intact | Stratum 4 (ephemera): caches, active leases, in-flight classifier work | Cursor resumes, duplicate source IDs are idempotent, expired jobs requeue. |
+| **Projection loss** (stratum 3 corrupted, strata 1+2 intact) | Source observations + durable decisions | Graph projection | Rebuild graph from strata 1+2. **Critical:** Entmoot-owned durable decisions (branch merges, human corrections, lifecycle transitions) live in stratum 2, not in Dione — Dione replay alone cannot recreate them. Entmoot's decision log (stratum 2) must be backed up independently of the graph projection. |
+| **DB loss** (disk gone) | Nothing local | All four strata | Requires backup of strata 1+2. Graph (stratum 3) rebuilds from those. Stratum 4 is disposable. Without backup, Dione replay can reconstruct source observations (stratum 1) but not Entmoot-owned decisions (stratum 2). |
+| **Explicit retention expiry / "forget me"** | Erasure receipt survives | Targeted content and embeddings purged or tombstoned by policy | Replay cannot resurrect deleted material because the erasure receipt gates re-ingestion. Derived enrichments that disclosed deleted content are retracted or re-derived. |
 
-**Replay log ownership:** Dione owns factual event envelopes. Entmoot owns its cursor, immutable interpretation/decision log, and rebuildable projections. If Dione cannot replay durably yet, Entmoot maintains an ingestion journal as a temporary canonical copy — otherwise the "kill it and rebuild" acceptance test is fiction.
+**Replay log ownership:** Dione owns factual event envelopes and durable replay. Entmoot owns its cursor, immutable interpretation/decision log (stratum 2), and rebuildable projections (stratum 3). The "kill Entmoot and rebuild" acceptance test requires Dione's durable replay to be operational — projection loss recovery depends on it. Entmoot-owned decisions (stratum 2) are NOT recoverable from Dione replay; they require independent backup.
 
-**Transactional outbox:** Cross-boundary writes (prune/distillation to Person API or memory-mcp) use a durable outbox with idempotency keys `(branch_transition, projection_generation, effect_kind)`. Prevents duplicate memories on crash recovery. The outbox carries proposals with epistemic status, not commands — observations labeled as observations, inferences labeled as inferences.
+**Prune safety:** The distillation receipt gates the live→prunable transition. Fail closed: if the receipt write fails, the branch stays live. The sequence is: (1) distillation receipt written locally, (2) outbox enqueues Person API proposal, (3) transition permitted. Downstream readback is not required to gate the transition — the outbox guarantees eventual delivery.
+
+**Transactional outbox:** Cross-boundary writes (prune/distillation to Person API or memory-mcp) use a durable outbox with content-addressed idempotency keys: `SHA256(branch_id + transition_type + distillation_content)`. Content-addressed keys survive projection rebuilds — unlike `projection_generation`, which changes on rebuild and would break idempotency across replays. The outbox carries evidence-backed proposals with epistemic status, not commands — observations labeled as observations, inferences labeled as inferences.
 
 **Five contracts (acceptance criteria):**
 
