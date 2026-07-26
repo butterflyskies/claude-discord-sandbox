@@ -1,4 +1,4 @@
-# Conversation Tree — Design Document
+# Entmoot Design Document
 
 ## Authors
 
