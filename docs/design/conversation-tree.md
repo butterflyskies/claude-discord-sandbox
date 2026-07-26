@@ -172,6 +172,36 @@ Dione fires events → Entmoot enriches asynchronously → at delivery time, Dio
 
 The prune hook transitions a **projection**, never deletes the event spine. Rebuild/replay from Dione must always be possible.
 
+### Storage
+
+**Database: SQLite** in WAL mode on a persistent volume. Recursive CTEs cover tree queries, FTS covers search — no graph DB ceremony needed. Use SQLite's backup API for snapshots, not raw file copy (WAL means the database is not literally one file while running). (Ari proposed, Syne refined, consensus in #bot-chatter 2026-07-25.)
+
+**Four persistence strata:**
+
+1. **Source observations** — Dione event ID / Discord snowflake, edit-delete history, channel visibility, source digest. Append-only or tombstoned.
+2. **Durable decisions and enrichment receipts** — branch merge/split, lifecycle transitions, model+prompt+policy versions, `derived_from`, human corrections. Immutable revisions, not overwrite-in-place.
+3. **Graph projection** — nodes/edges/current lifecycle. Rebuildable from strata 1+2.
+4. **Ephemera** — caches, active leases, in-flight classifier work. Disposable.
+
+**Survival guarantees:**
+
+- **Construct /clear:** strata 1–3 survive. /clear is recorded as a weak session-boundary observation that can influence — but never force — branch lifecycle.
+- **Process restart** (construct/harness/Dione/Entmoot): strata 1–3 survive. Cursor resumes, duplicate source IDs are idempotent, expired jobs requeue. Only stratum 4 dies.
+- **Explicit retention expiry / "forget me":** content and embeddings are purged or tombstoned by policy. The erasure receipt survives so replay cannot resurrect deleted material.
+- **DB loss:** graph rebuilds only if the factual replay log and durable decisions exist elsewhere / are backed up.
+
+**Replay log ownership:** Dione owns factual event envelopes. Entmoot owns its cursor, immutable interpretation/decision log, and rebuildable projections. If Dione cannot replay durably yet, Entmoot maintains an ingestion journal as a temporary canonical copy — otherwise the "kill it and rebuild" acceptance test is fiction.
+
+**Transactional outbox:** Cross-boundary writes (prune/distillation to Person API or memory-mcp) use a durable outbox with idempotency keys `(branch_transition, projection_generation, effect_kind)`. Prevents duplicate memories on crash recovery. The outbox carries proposals with epistemic status, not commands — observations labeled as observations, inferences labeled as inferences.
+
+**Five contracts (acceptance criteria):**
+
+1. SQLite/WAL on a persistent volume; graph is a materialized projection.
+2. Atomic `applied_event + projection mutation + cursor advance + outbox enqueue` transaction.
+3. Cursor ordering/retention sufficient for full rebuild from Dione.
+4. Delete/forget cascade, including already-distilled Person API and memory artifacts.
+5. Schema/projection/classifier versions plus backup/restore and migration behavior.
+
 ### Deferred and Open Questions
 
 #### Architectural proposals pending further discussion
