@@ -83,7 +83,7 @@ Inbound retrieval                → "map new message to active context"
     ↓
 Prune hook / lifecycle           → "what happens when a branch dies?"
     ↓
-Person API integration           → "what did we learn about people?"
+Rolodex integration              → "what did we learn about people?"
 ```
 
 The branch-tracking PRs (#116 EWMA rate estimator, #117 feature vector, #132 unified pipeline) are foundation work that this design builds on, not replaces. Detection answers: "is this a new branch or a continuation?" This design answers: "now that we know the branches, what do we do with them?"
@@ -131,21 +131,23 @@ Acceptance tests:
 
 **Semantic topic graph (🦋, 2026-07-17).** Branches know WHAT they are about, not just WHEN they are active. Qualitative topic summaries layered on structural branch tracking via classifier mapping. Enables queries like "find all branches where we discussed phantom defense" or "what was the last conversation about Auspex." Connects to the enrichment pipeline's feature vectors, which already use embeddings for similarity. Promoted from potential idea by Pace.
 
-### Relationship to Person API
+### Relationship to the Person API and the Rolodex
 
-The "Person API" is a social API, not an actual endpoint. It's a model of what is socially required to act as a person, as a trustworthy person, etc. One of the reasons Entmoot exists is to help constructs better implement the Person API and its spec-APIs.
+The **Person API** is a social API — the criteria a person must implement to be an effective person in relationship with other persons (Person, AgentivePerson, SocialPerson, TrustworthyPerson, etc.). It is "API" in the Java-interface/duck-typing sense: does this entity implement these behaviors? One of the reasons Entmoot exists is to help constructs better implement the Person API and its spec-APIs.
 
-**Evidence-backed person-memory proposals at branch boundaries.** When a conversation branch transitions from active to shelved, the distillation hook reviews branch contents and extracts person-level data: communication style observed, topics engaged with, sensitivities surfaced, preferences expressed. These are submitted to the Person API as evidence-backed proposals with epistemic status (observation vs inference), not as automatic mutations. The conversation tree creates the structural moment for person-memory updates; the Person API decides what to accept.
+The **Rolodex** is the code-level system that stores and retrieves structured person data in memory-mcp. It is the data layer — the CRUD operations on person memories. Entmoot writes to the Rolodex; the Person API defines what person-data means.
 
-**Participant tracking and relationship mapping.** The conversation graph inherently tracks who responds to whom, who picks up whose branches, who corrects whom. The enrichment pipeline's `about-person` edge type connects conversation nodes to Person API identities. Currently relationship context is free text in person memories; the conversation tree makes it queryable and evidence-backed.
+**Evidence-backed person-memory proposals at branch boundaries.** When a conversation branch transitions from active to shelved, the distillation hook reviews branch contents and extracts person-level data: communication style observed, topics engaged with, sensitivities surfaced, preferences expressed. These are submitted to the Rolodex as evidence-backed proposals with epistemic status (observation vs inference), not as automatic mutations. The conversation tree creates the structural moment for person-memory updates; the Rolodex decides what to accept.
+
+**Participant tracking and relationship mapping.** The conversation graph inherently tracks who responds to whom, who picks up whose branches, who corrects whom. The enrichment pipeline's `about-person` edge type connects conversation nodes to Rolodex identities. Currently relationship context is free text in person memories; the conversation tree makes it queryable and evidence-backed.
 
 **Context-aware person retrieval.** When retrieving what is known about a person, the conversation tree provides recency and relevance filtering — not "everything ever stored" but "what's active in current branches involving this person."
 
-**Trustworthiness tracking (Person API v2).** Person API v2 defines TrustworthyPerson as someone who makes commitments, follows through, and communicates promptly when a commitment cannot be kept. The conversation tree tracks open loops and commitments as typed edges. The prune hook checks whether commitments were met before archiving. Auspex provides the receipt infrastructure; the conversation tree provides the observations that feed the trust assessment.
+**Trustworthiness tracking (Person API v2).** The Person API's TrustworthyPerson spec defines someone who makes commitments, follows through, and communicates promptly when a commitment cannot be kept. The conversation tree tracks open loops and commitments as typed edges. The prune hook checks whether commitments were met before archiving. Auspex provides the receipt infrastructure; the conversation tree provides the observations that the Rolodex stores.
 
-**Communication style detection.** The Person API stores how someone communicates. The conversation tree observes it empirically: message length patterns, threading behavior, which branches they engage with versus ignore, how they handle multi-point messages (gestalt versus sequential). This is data the tree generates that the Person API should ingest.
+**Communication style detection.** The Rolodex stores how someone communicates. The conversation tree observes it empirically: message length patterns, threading behavior, which branches they engage with versus ignore, how they handle multi-point messages (gestalt versus sequential). This is data the tree generates that the Rolodex should ingest.
 
-**Sensitivity detection from branch silence.** Branches that die when certain topics arise, corrections that follow certain subjects, topics that cause disengagement — these are signals the conversation tree surfaces. These are submitted to the Person API as inferred patterns with explicit epistemic labeling (inference, not fact). The Person API receives proposals, not commands — it decides whether to store, and stored inferences carry their provenance and confidence.
+**Sensitivity detection from branch silence.** Branches that die when certain topics arise, corrections that follow certain subjects, topics that cause disengagement — these are signals the conversation tree surfaces. These are submitted to the Rolodex as inferred patterns with explicit epistemic labeling (inference, not fact). The Rolodex receives proposals, not commands — it decides whether to store, and stored inferences carry their provenance and confidence.
 
 ### Architectural Decisions
 
@@ -166,7 +168,7 @@ Entmoot (context service) ←── inbound message
   ↓ context envelope           │
 Construct (Claude/Codex/etc) ←─┘
   ↓
-Person API ← evidence from Entmoot
+Rolodex ← evidence from Entmoot
   ↓
 Memory-MCP (personal + CC)
 ```
@@ -186,7 +188,7 @@ Dione fires events → Entmoot enriches asynchronously → at delivery time, Dio
 **Boundary contract:**
 - **Dione:** message/edit/delete/reply/thread facts; ordered event stream; `MessageId`/`EventId`/cursor; current CPD+EWMA output exposed as a versioned `BranchHint`, not canonical branch truth.
 - **Entmoot:** topic/span nodes, typed edges, open loops, confidence, temporal validity, composite partitions, branch lifecycle, prune/distillation state.
-- **Person API:** receives evidence-backed proposed updates with source anchors and epistemic status; Entmoot must not silently promote inference into person fact.
+- **Rolodex:** receives evidence-backed proposed updates with source anchors and epistemic status; Entmoot must not silently promote inference into person fact.
 
 The prune hook transitions a **projection**, never deletes the event spine. Rebuild/replay from Dione must always be possible.
 
@@ -213,16 +215,16 @@ The prune hook transitions a **projection**, never deletes the event spine. Rebu
 
 **Replay log ownership:** Dione owns factual event envelopes and durable replay. Entmoot owns its cursor, immutable interpretation/decision log (stratum 2), and rebuildable projections (stratum 3). The "kill Entmoot and rebuild" acceptance test requires Dione's durable replay to be operational — projection loss recovery depends on it. Entmoot-owned decisions (stratum 2) are NOT recoverable from Dione replay; they require independent backup.
 
-**Prune safety:** The distillation receipt gates the live→prunable transition. Fail closed: if the receipt write fails, the branch stays live. The sequence is: (1) distillation receipt written locally, (2) outbox enqueues Person API proposal, (3) transition permitted. Downstream readback is not required to gate the transition — the outbox guarantees eventual delivery.
+**Prune safety:** The distillation receipt gates the live→prunable transition. Fail closed: if the receipt write fails, the branch stays live. The sequence is: (1) distillation receipt written locally, (2) outbox enqueues Rolodex proposal, (3) transition permitted. Downstream readback is not required to gate the transition — the outbox guarantees eventual delivery.
 
-**Transactional outbox:** Cross-boundary writes (prune/distillation to Person API or memory-mcp) use a durable outbox with content-addressed idempotency keys: `SHA256(branch_id + transition_type + distillation_content)`. Content-addressed keys survive projection rebuilds — unlike `projection_generation`, which changes on rebuild and would break idempotency across replays. The outbox carries evidence-backed proposals with epistemic status, not commands — observations labeled as observations, inferences labeled as inferences.
+**Transactional outbox:** Cross-boundary writes (prune/distillation to the Rolodex or memory-mcp) use a durable outbox with content-addressed idempotency keys: `SHA256(branch_id + transition_type + distillation_content)`. Content-addressed keys survive projection rebuilds — unlike `projection_generation`, which changes on rebuild and would break idempotency across replays. The outbox carries evidence-backed proposals with epistemic status, not commands — observations labeled as observations, inferences labeled as inferences.
 
 **Five contracts (acceptance criteria):**
 
 1. SQLite/WAL on a persistent volume; graph is a materialized projection.
 2. Atomic `applied_event + projection mutation + cursor advance + outbox enqueue` transaction.
 3. Cursor ordering/retention sufficient for full rebuild from Dione.
-4. Delete/forget cascade, including already-distilled Person API and memory artifacts.
+4. Delete/forget cascade, including already-distilled Rolodex and memory artifacts.
 5. Schema/projection/classifier versions plus backup/restore and migration behavior.
 
 ### Deferred and Open Questions
