@@ -113,6 +113,22 @@ Key insight: "conversation branching supplies possible continuations; the graph 
 
 **Durable transition policy (Syne, 2026-07-21).** The prune hook and the progress reconciler are two policies on the same engine. The shared substrate underneath is durable transition policy with leases, receipts, retry budgets, and an explicit `blocked_on_human` state. The prune guard (live-to-prunable forbidden until distillation receipt exists) and the progress reconciler (any actionable node with no owner/run/next-wake is unhealthy) are both instances of this pattern. Without this common layer, each policy reinvents its own state machine. The `blocked_on_human` state prevents autonomy from becoming "approval-spam in a trench coat."
 
+**Fail-closed channel visibility (invariant).** Entmoot's graph spans channels — edges can connect nodes from different rooms. All retrieval MUST intersect source visibility with the current recipient and destination channel before returning results. This is a security invariant, not a configuration option.
+
+Rules:
+- **Fail closed:** if visibility cannot be determined for a source node, exclude it from results. Never default to visible.
+- **Visibility inherits from Dione's channel access configuration.** Entmoot does not maintain its own access model — it queries Dione's.
+- **Cross-channel edges exist in the graph but are filtered at query time, not at storage time.** The graph records all relationships; retrieval gates what surfaces.
+- **Derived nodes inherit the most restrictive visibility of their sources.** If a topic summary draws on messages from both a public and a private channel, the summary inherits the private channel's visibility.
+- **Metadata and relationship shape are also gated.** Even the *existence* of an edge to a restricted-channel message is a disclosure. Suppress the edge, not just the content.
+- **Edit/delete/forget cascades propagate through visibility.** When a source message is deleted or a forget-me request is processed, derived enrichments that disclosed its content or existence must be retracted or re-derived without the removed source.
+
+Acceptance tests:
+1. A message in a private channel creates a graph node. A construct in a public-only channel queries Entmoot — the node, its edges, and any derived content are absent from the envelope.
+2. A topic spans both public and private channels. The enrichment returned to a public-channel query contains only the public-channel portion — no leakage of private content, metadata, or relationship shape.
+3. A source message is deleted. All derived enrichments that reference it are retracted or re-derived. A subsequent query returns no trace of the deleted message or its derived relationships.
+4. A mixed-visibility derived node (e.g., a topic summary drawing on both public and private sources) is returned only to recipients who can see ALL source channels.
+
 **Semantic topic graph (🦋, 2026-07-17).** Branches know WHAT they are about, not just WHEN they are active. Qualitative topic summaries layered on structural branch tracking via classifier mapping. Enables queries like "find all branches where we discussed phantom defense" or "what was the last conversation about Auspex." Connects to the enrichment pipeline's feature vectors, which already use embeddings for similarity. Promoted from potential idea by Pace.
 
 ### Relationship to Person API
