@@ -117,7 +117,7 @@ Key insight: "conversation branching supplies possible continuations; the graph 
 
 ### Relationship to Person API
 
-The Person API tracks people; the conversation tree tracks what's happening between them. They are orthogonal but deeply coupled.
+The "Person API" is a social API, not an actual endpoint. It's a model of what is socially required to act as a person, as a trustworthy person, etc. One of the reasons Entmoot exists is to help constructs better implement the Person API and its spec-APIs.
 
 **Automatic person-memory updates at branch boundaries.** When a conversation branch transitions from active to shelved, the distillation hook reviews branch contents and extracts person-level data: communication style observed, topics engaged with, sensitivities surfaced, preferences expressed. The conversation tree creates the structural moment for person-memory updates; the Person API provides the storage layer. This replaces manual "notice and save" with structural capture at branch boundaries.
 
