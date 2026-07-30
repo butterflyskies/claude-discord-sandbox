@@ -5,7 +5,7 @@
 
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
-use entmoot::{Disposition, Message, Store};
+use entmoot::{Disposition, Message, Store, DEFAULT_STALE_THRESHOLD};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -33,7 +33,7 @@ enum Command {
     Status,
     /// Surface branches idle longer than the threshold (minutes).
     Tend {
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = DEFAULT_STALE_THRESHOLD.num_minutes())]
         threshold_minutes: i64,
     },
     /// Prune a channel's branch up to (and including) a message id.

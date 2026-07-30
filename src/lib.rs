@@ -151,7 +151,10 @@ impl Branch {
         self.messages.front()
     }
 
-    /// The most recent message received on this branch.
+    /// The most recent message that hasn't been pruned yet. `None` once the
+    /// branch is fully pruned — this is the unpruned tail, not a record of
+    /// everything ever received. `last_activity` and `latest_known_id` are
+    /// the fields that survive a prune.
     pub fn latest(&self) -> Option<&Message> {
         self.messages.back()
     }
@@ -220,8 +223,10 @@ enum SavePhase {
     BeforeRename,
 }
 
-/// Default staleness threshold used by `tend()` when the caller doesn't
-/// override it: 10 minutes.
+/// The house default staleness threshold: 10 minutes. `tend()` takes its
+/// threshold as a required argument and never reads this — it is here so
+/// callers that want the default have one place to read it from rather than
+/// each hardcoding their own 10.
 pub const DEFAULT_STALE_THRESHOLD: Duration = Duration::minutes(10);
 
 /// The Entmoot store: all branches, plus the retained prune history. This is
@@ -265,8 +270,9 @@ impl Store {
         self.branches.len()
     }
 
-    /// Status of every known branch, in no particular guaranteed order
-    /// (callers that need stable ordering should sort by `channel_id`).
+    /// Status of every known branch, sorted by `channel_id`. The order is a
+    /// guarantee, not an accident of the underlying map — callers may index
+    /// into the result.
     pub fn status(&self, now: DateTime<Utc>) -> Vec<BranchStatus> {
         let mut out: Vec<BranchStatus> = self
             .branches
