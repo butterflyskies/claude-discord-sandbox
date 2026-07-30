@@ -65,6 +65,34 @@ fn activity_resets_staleness() {
     assert_eq!(store.status(ts(700))[0].staleness, Duration::seconds(200));
 }
 
+// --- Test 3b: out-of-order arrival. Every guard in `water` that exists for
+// reordered delivery — the id sort, the last_activity max, the latest_known_id
+// max — only does work when messages arrive jumbled, which is the normal case
+// for a gateway that replays or backfills. Ordering is by id, and a late
+// message carrying an older timestamp must not rewind the staleness clock. ---
+#[test]
+fn out_of_order_arrival_is_ordered_by_id_and_never_rewinds_the_clock() {
+    let mut store = Store::new();
+    store.water("chan-1", "general", msg(3, 30, "lina", "third"));
+    store.water("chan-1", "general", msg(1, 0, "lina", "first"));
+    store.water("chan-1", "general", msg(2, 10, "ari", "second"));
+
+    let branch = store.branch("chan-1").unwrap();
+    // FIFO is by id, not by arrival — this is what tend() depends on.
+    assert_eq!(branch.earliest_unpruned().unwrap().id, 1);
+    assert_eq!(branch.latest().unwrap().id, 3);
+    assert_eq!(branch.message_count, 3);
+    // The two late arrivals were older, so the branch is as stale as its
+    // newest message, not as fresh as the last one received.
+    assert_eq!(branch.staleness(ts(30)), Duration::zero());
+    assert_eq!(store.latest_known_id("chan-1").unwrap(), 3);
+
+    // And the prune cursor still means "id <= 2", regardless of arrival order.
+    store.prune("chan-1", 2, Disposition::Done).unwrap();
+    let branch = store.branch("chan-1").unwrap();
+    assert_eq!(branch.earliest_unpruned().unwrap().id, 3);
+}
+
 // --- Test 4 / Pace's "tend surfaces stale": branches above threshold appear, fresh ones don't ---
 #[test]
 fn tend_surfaces_stale_not_fresh() {
