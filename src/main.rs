@@ -5,7 +5,7 @@
 
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
-use entmoot::{Disposition, Message, Store, DEFAULT_STALE_THRESHOLD};
+use entmoot::{Author, ChannelId, ChannelName, Content, Disposition, Message, Store, DEFAULT_STALE_THRESHOLD};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -23,11 +23,11 @@ struct Cli {
 enum Command {
     /// Feed a message into a channel's branch (creates it if new).
     Water {
-        channel_id: String,
-        channel_name: String,
+        channel_id: ChannelId,
+        channel_name: ChannelName,
         message_id: u64,
-        author: String,
-        content: String,
+        author: Author,
+        content: Content,
     },
     /// Show the status of every known branch.
     Status,
@@ -38,7 +38,7 @@ enum Command {
     },
     /// Prune a channel's branch up to (and including) a message id.
     Prune {
-        channel_id: String,
+        channel_id: ChannelId,
         message_id: u64,
         #[arg(value_enum)]
         disposition: DispositionArg,
@@ -46,12 +46,12 @@ enum Command {
     /// Prune a channel's branch up to its latest known message
     /// (`prune(channel) = prune(channel, latest_known_id)`).
     PruneLatest {
-        channel_id: String,
+        channel_id: ChannelId,
         #[arg(value_enum)]
         disposition: DispositionArg,
     },
     /// Show prune history, optionally filtered to one channel.
-    History { channel_id: Option<String> },
+    History { channel_id: Option<ChannelId> },
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -83,11 +83,8 @@ fn main() -> anyhow::Result<()> {
             author,
             content,
         } => {
-            store.water(
-                channel_id,
-                channel_name,
-                Message::new(message_id, Utc::now(), author, content),
-            );
+            let message = Message::new(message_id, Utc::now(), author.as_str(), content.as_str())?;
+            store.water(channel_id, channel_name, message);
             store.save(&cli.state)?;
             println!("watered.");
         }
@@ -100,14 +97,15 @@ fn main() -> anyhow::Result<()> {
                     s.channel_name,
                     s.message_count,
                     s.staleness.num_seconds(),
-                    s.earliest_unpruned.map(|m| m.content),
-                    s.latest.map(|m| m.content)
+                    s.earliest_unpruned.map(|m| m.content.to_string()),
+                    s.latest.map(|m| m.content.to_string())
                 );
             }
         }
         Command::Tend { threshold_minutes } => {
             let now = Utc::now();
-            let threshold = Duration::minutes(threshold_minutes);
+            let threshold = Duration::try_minutes(threshold_minutes)
+                .ok_or_else(|| anyhow::anyhow!("threshold-minutes value overflows"))?;
             for t in store.tend(now, threshold) {
                 println!(
                     "[{}] {} idle {}s — earliest unpruned: \"{}\" (from {})",
@@ -124,7 +122,7 @@ fn main() -> anyhow::Result<()> {
             message_id,
             disposition,
         } => {
-            let record = store.prune(&channel_id, message_id, disposition.into())?;
+            let record = store.prune(channel_id, message_id, disposition.into(), Utc::now())?;
             store.save(&cli.state)?;
             println!(
                 "pruned {} up to {} as {}",
@@ -135,7 +133,7 @@ fn main() -> anyhow::Result<()> {
             channel_id,
             disposition,
         } => {
-            let record = store.prune_latest(&channel_id, disposition.into())?;
+            let record = store.prune_latest(channel_id, disposition.into(), Utc::now())?;
             store.save(&cli.state)?;
             println!(
                 "pruned {} up to {} as {}",
@@ -143,7 +141,7 @@ fn main() -> anyhow::Result<()> {
             );
         }
         Command::History { channel_id } => {
-            let records: Vec<_> = match &channel_id {
+            let records: Vec<_> = match channel_id {
                 Some(id) => store.history_for(id).into_iter().cloned().collect(),
                 None => store.history().to_vec(),
             };
