@@ -5,3 +5,9 @@
 # default --state lands one in the repo root, so keep them out by name.
 entmoot-state.json
 /*.json
+
+# `Store::save` writes a `.tmpXXXXXX` sibling and renames it over the ledger.
+# A process killed outright runs no destructors, so that sibling survives — a
+# complete copy of the ledger, same content, same exposure, under a name none
+# of the rules above match.
+.tmp*
