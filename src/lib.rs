@@ -503,7 +503,10 @@ mod durability {
             let before = std::fs::read(&path).unwrap();
 
             let err = grown().save_with_hook(&path, crash_at(phase)).unwrap_err();
-            assert!(matches!(err, EntmootError::Io(_)), "unexpected error at {phase:?}: {err}");
+            assert!(
+                matches!(err, EntmootError::Io(_)),
+                "unexpected error at {phase:?}: {err}"
+            );
 
             // Not truncated, not partially overwritten, not zero-length.
             assert_eq!(
@@ -525,7 +528,11 @@ mod durability {
                 .unwrap()
                 .map(|e| e.unwrap().path())
                 .collect();
-            assert_eq!(leftovers, vec![path.clone()], "save that failed at {phase:?} left files behind");
+            assert_eq!(
+                leftovers,
+                vec![path.clone()],
+                "save that failed at {phase:?} left files behind"
+            );
         }
     }
 

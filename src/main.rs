@@ -83,7 +83,11 @@ fn main() -> anyhow::Result<()> {
             author,
             content,
         } => {
-            store.water(channel_id, channel_name, Message::new(message_id, Utc::now(), author, content));
+            store.water(
+                channel_id,
+                channel_name,
+                Message::new(message_id, Utc::now(), author, content),
+            );
             store.save(&cli.state)?;
             println!("watered.");
         }
@@ -122,12 +126,21 @@ fn main() -> anyhow::Result<()> {
         } => {
             let record = store.prune(&channel_id, message_id, disposition.into())?;
             store.save(&cli.state)?;
-            println!("pruned {} up to {} as {}", record.channel_id, record.message_id, record.disposition);
+            println!(
+                "pruned {} up to {} as {}",
+                record.channel_id, record.message_id, record.disposition
+            );
         }
-        Command::PruneLatest { channel_id, disposition } => {
+        Command::PruneLatest {
+            channel_id,
+            disposition,
+        } => {
             let record = store.prune_latest(&channel_id, disposition.into())?;
             store.save(&cli.state)?;
-            println!("pruned {} up to {} as {}", record.channel_id, record.message_id, record.disposition);
+            println!(
+                "pruned {} up to {} as {}",
+                record.channel_id, record.message_id, record.disposition
+            );
         }
         Command::History { channel_id } => {
             let records: Vec<_> = match &channel_id {
@@ -135,7 +148,10 @@ fn main() -> anyhow::Result<()> {
                 None => store.history().to_vec(),
             };
             for r in records {
-                println!("[{}] up to {} — {} at {}", r.channel_id, r.message_id, r.disposition, r.pruned_at);
+                println!(
+                    "[{}] up to {} — {} at {}",
+                    r.channel_id, r.message_id, r.disposition, r.pruned_at
+                );
             }
         }
     }

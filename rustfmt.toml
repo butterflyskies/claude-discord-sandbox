@@ -1,0 +1,3 @@
+# The crate was authored at this width; pinning it makes `cargo fmt --check`
+# meaningful instead of a 24-hunk rewrite of code nobody wants reformatted.
+max_width = 120

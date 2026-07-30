@@ -165,7 +165,12 @@ fn hadamard_gate_promise_is_last_message() {
     store.water(
         "chan-1",
         "general",
-        msg(2, 30, "ari", "I'll look into the Fredkin gate design and get back to you"),
+        msg(
+            2,
+            30,
+            "ari",
+            "I'll look into the Fredkin gate design and get back to you",
+        ),
     );
 
     let now = ts(30 + 600);
@@ -222,7 +227,10 @@ fn fredkin_gate_promise_floats_to_top_after_prune() {
 
     let branch = store.branch("chan-1").unwrap();
     assert_eq!(branch.earliest_unpruned().unwrap().id, 3);
-    assert_eq!(branch.earliest_unpruned().unwrap().content, "I'll circle back on the schema");
+    assert_eq!(
+        branch.earliest_unpruned().unwrap().content,
+        "I'll circle back on the schema"
+    );
 
     let now = ts(30 + 600);
     let tended = store.tend(now, Duration::minutes(10));
