@@ -1,2 +1,7 @@
 /target
 *.json.local
+
+# Ledgers hold verbatim message content, authors, and channel ids. The CLI's
+# default --state lands one in the repo root, so keep them out by name.
+entmoot-state.json
+/*.json

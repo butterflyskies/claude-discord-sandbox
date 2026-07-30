@@ -25,7 +25,8 @@ MVP scope:
   unpruned message with id <= `message_id` and requires a disposition tag (`done`,
   `dropped`, `parked`). `prune_latest(channel, disposition)` is sugar that reads the
   branch's current latest known id and forwards to the same function.
-- Persists to a JSON file on disk.
+- Persists to a JSON file on disk, atomically — a save that dies partway through
+  leaves the previous ledger intact rather than a truncated one.
 - Fully self-contained: no live Discord, no Dione dependency, no humans or sibling
   constructs in the loop. Tests inject synthetic `Message` values directly.
 
@@ -36,9 +37,12 @@ that granularity.
 ### Usage
 
 ```bash
-cargo test    # 15 tests covering plant/water, staleness, tend, prune, persistence,
-              # multi-channel, the promise-gate scenarios (Hadamard/Clifford/Fredkin),
-              # the prune race condition, and disposition history
+# Lifecycle tests live in tests/integration.rs — plant/water, staleness, tend,
+# prune, persistence, multi-channel, out-of-order arrival, the promise-gate
+# scenarios (Hadamard/Clifford/Fredkin), the prune race condition, and
+# disposition history. The atomic-save durability tests live in src/lib.rs,
+# where they can reach the private crash seam.
+cargo nextest run --workspace
 
 cargo run -- --state ./entmoot-state.json water <channel_id> <channel_name> <message_id> <author> <content>
 cargo run -- --state ./entmoot-state.json status
