@@ -372,6 +372,20 @@ impl Store {
     /// file beside it, flushes that copy to disk, and renames it over the
     /// target. A crash at any point leaves either the previous ledger or the
     /// new one on disk — never a truncated or half-written mixture.
+    ///
+    /// Two limits on that guarantee, both deliberate:
+    ///
+    /// - Surviving power loss (as opposed to a process dying) additionally
+    ///   requires the parent directory to be synced, which is done only on
+    ///   unix. On other platforms the rename is atomic but its durability is
+    ///   whatever the filesystem offers.
+    /// - A process killed outright runs no destructors, so the temp file it
+    ///   was writing is left behind. It is inert — a uniquely named sibling
+    ///   the ledger never points at — but nothing reaps it.
+    ///
+    /// An `Err` returned after the rename has already committed is possible
+    /// (only from the directory sync), so a failed `save` means "the new state
+    /// may or may not be live", never "the old state was damaged".
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), EntmootError> {
         self.save_with_hook(path.as_ref(), |_| Ok(()))
     }
@@ -398,6 +412,8 @@ impl Store {
 
         // NamedTempFile unlinks itself on drop, so every `?` below cleans up
         // its own temp file on the way out — including the hook's failures.
+        // A hard kill runs no destructors and does leave the temp behind; see
+        // the note on `save`.
         let mut tmp = NamedTempFile::new_in(dir)?;
 
         // Written in two chunks so there is a real window in which the temp
@@ -437,16 +453,22 @@ impl Store {
         Ok(())
     }
 
-    /// Load a store from `path`. Returns an empty store if the file doesn't
-    /// exist yet — a fresh Entmoot instance with nothing planted.
+    /// Load a store from `path`. A missing file — and only a missing file —
+    /// yields an empty store: a fresh Entmoot instance with nothing planted.
+    ///
+    /// Every other failure to read the ledger is an error, deliberately. The
+    /// tempting shape here is `if !path.exists()`, but `exists()` reports
+    /// `false` for any failed stat — an unreadable parent directory, a
+    /// dangling symlink, a transient I/O error — so an unreachable ledger
+    /// would load as "nothing planted yet" and the next [`Store::save`] would
+    /// durably, atomically replace the real ledger with an empty one. Opening
+    /// and matching on the error keeps that failure loud.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, EntmootError> {
-        let path = path.as_ref();
-        if !path.exists() {
-            return Ok(Self::default());
+        match std::fs::read(path.as_ref()) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e.into()),
         }
-        let bytes = std::fs::read(path)?;
-        let store: Store = serde_json::from_slice(&bytes)?;
-        Ok(store)
     }
 }
 
@@ -489,6 +511,12 @@ mod durability {
         }
     }
 
+    fn dir_entries(dir: &Path) -> Vec<std::path::PathBuf> {
+        let mut paths: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+        paths.sort();
+        paths
+    }
+
     /// The invariant the whole atomic-save exercise exists for: a save that
     /// dies partway through must not damage the ledger that was already
     /// there. Checked at both crash windows — payload half-written, and
@@ -502,7 +530,33 @@ mod durability {
             planted().save(&path).unwrap();
             let before = std::fs::read(&path).unwrap();
 
-            let err = grown().save_with_hook(&path, crash_at(phase)).unwrap_err();
+            // Watch the crash window from inside it: at the moment of the
+            // fault there really is a half-written payload sitting next to the
+            // ledger, and the ledger really is still the old one. Without this
+            // the phases would be indistinguishable from each other and from a
+            // save that never wrote anything at all.
+            let saving = grown();
+            let full_len = serde_json::to_vec_pretty(&saving).unwrap().len();
+            let mut observed_mid_write = false;
+            let mut crash = crash_at(phase);
+            let err = saving
+                .save_with_hook(&path, |reached| {
+                    if reached == SavePhase::PartiallyWritten {
+                        let siblings: Vec<_> = dir_entries(dir.path()).into_iter().filter(|p| *p != path).collect();
+                        assert_eq!(siblings.len(), 1, "expected exactly one temp file mid-write");
+                        let partial = std::fs::metadata(&siblings[0]).unwrap().len() as usize;
+                        assert!(partial > 0, "temp file was empty mid-write");
+                        assert!(
+                            partial < full_len,
+                            "temp file held the whole payload, so there was no mid-write window"
+                        );
+                        assert_eq!(std::fs::read(&path).unwrap(), before, "ledger touched mid-write");
+                        observed_mid_write = true;
+                    }
+                    crash(reached)
+                })
+                .unwrap_err();
+            assert!(observed_mid_write, "the mid-write checkpoint was never reached");
             assert!(
                 matches!(err, EntmootError::Io(_)),
                 "unexpected error at {phase:?}: {err}"
@@ -523,13 +577,13 @@ mod durability {
             assert_eq!(reloaded.branch("chan-1").unwrap().earliest_unpruned().unwrap().id, 1);
             assert!(reloaded.history().is_empty());
 
-            // The failed save cleaned up after itself.
-            let leftovers: Vec<_> = std::fs::read_dir(dir.path())
-                .unwrap()
-                .map(|e| e.unwrap().path())
-                .collect();
+            // The error path cleans up its own temp file. Note the scope: this
+            // holds because the fault unwinds and runs destructors. A process
+            // killed outright would leave the temp behind — inert, but not
+            // reaped — which is why `save` documents that rather than
+            // pretending this assertion covers it.
             assert_eq!(
-                leftovers,
+                dir_entries(dir.path()),
                 vec![path.clone()],
                 "save that failed at {phase:?} left files behind"
             );
@@ -552,28 +606,84 @@ mod durability {
         assert_eq!(reloaded.branch("chan-1").unwrap().earliest_unpruned().unwrap().id, 2);
         assert_eq!(reloaded.history().len(), 1);
 
-        let entries: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .collect();
-        assert_eq!(entries, vec![path]);
+        assert_eq!(dir_entries(dir.path()), vec![path]);
     }
 
-    /// Saving through a temp file must not quietly re-permission the ledger.
+    /// Both arms of the permission handling. Replacing a ledger keeps the mode
+    /// it already had; creating one keeps the temp file's restrictive default,
+    /// which matters because the ledger holds message content and authors.
     #[cfg(unix)]
     #[test]
-    fn save_preserves_the_permissions_of_an_existing_ledger() {
+    fn save_sets_ledger_permissions_from_the_file_it_replaces() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("entmoot-state.json");
 
-        planted().save(&path).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let fresh = dir.path().join("fresh.json");
+        planted().save(&fresh).unwrap();
+        let mode = std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a brand new ledger was not created private");
 
-        grown().save(&path).unwrap();
-
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let existing = dir.path().join("existing.json");
+        planted().save(&existing).unwrap();
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o640)).unwrap();
+        grown().save(&existing).unwrap();
+        let mode = std::fs::metadata(&existing).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o640, "save changed the ledger's permissions");
+    }
+
+    /// `load` must distinguish "no ledger yet" from "ledger unreadable". The
+    /// first is a fresh start; the second must not present as one, or the next
+    /// save durably replaces a real ledger with an empty one.
+    #[test]
+    fn load_returns_empty_only_for_a_missing_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let missing = dir.path().join("not-written-yet.json");
+        assert!(Store::load(&missing).unwrap().is_empty());
+
+        // A directory where a ledger was expected reads as an I/O error, not
+        // as an empty store.
+        let not_a_file = dir.path().join("a-directory.json");
+        std::fs::create_dir(&not_a_file).unwrap();
+        assert!(matches!(Store::load(&not_a_file), Err(EntmootError::Io(_))));
+
+        let corrupt = dir.path().join("corrupt.json");
+        std::fs::write(&corrupt, b"{ this is not a ledger").unwrap();
+        assert!(matches!(Store::load(&corrupt), Err(EntmootError::Serde(_))));
+    }
+
+    /// The case that makes the `exists()` shape dangerous rather than merely
+    /// unidiomatic: a real ledger that cannot be stat'd. `Path::exists` answers
+    /// `false` here, which would present a populated ledger as a fresh install
+    /// and hand the next save a licence to overwrite it.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_ledger_is_an_error_not_an_empty_store() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir(&vault).unwrap();
+        let path = vault.join("entmoot-state.json");
+        planted().save(&path).unwrap();
+
+        // Revoke traversal on the parent, so stat and open both fail.
+        std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = Store::load(&path);
+        // Root ignores permission bits; record whether they actually bit
+        // before restoring, so this test skips rather than lies when run as
+        // root.
+        let stat_was_blocked = !path.exists();
+        std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        if stat_was_blocked {
+            match result {
+                Err(EntmootError::Io(e)) => {
+                    assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied)
+                }
+                other => panic!("unreadable ledger loaded as {other:?} instead of an error"),
+            }
+        }
     }
 }
