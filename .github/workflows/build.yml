@@ -32,7 +32,11 @@ jobs:
             -o /tmp/cargo-nextest.tar.gz
           echo "8e38b16299864c9f597c9a1e2caf25b7e8b598ffc659ec014c2c735a9befd8fa  /tmp/cargo-nextest.tar.gz" | sha256sum -c -
           tar xzf /tmp/cargo-nextest.tar.gz -C /usr/local/bin
+      # --locked on every step that resolves dependencies, not just the build:
+      # the first un-locked cargo invocation regenerates Cargo.lock, and every
+      # --locked check after it then compares against the file cargo just
+      # rewrote rather than the one under review.
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo build --locked
-      - run: cargo nextest run --no-fail-fast
+      - run: cargo nextest run --locked --no-fail-fast
