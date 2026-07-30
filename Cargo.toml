@@ -12,6 +12,6 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-
-[dev-dependencies]
+# Used by `Store::save` to create the same-directory temp file it renames over
+# the ledger — collision-free naming and unlink-on-drop cleanup.
 tempfile = "3"

@@ -26,11 +26,13 @@
 //!   injected by the caller (or the CLI binary).
 
 use std::collections::VecDeque;
+use std::io::Write;
 use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tempfile::NamedTempFile;
 
 /// A single conversational event fed into Entmoot. In production this is
 /// derived from a Dione message event; in tests it's constructed directly —
@@ -207,6 +209,17 @@ pub enum EntmootError {
     Serde(#[from] serde_json::Error),
 }
 
+/// The points inside [`Store::save`] at which a crash would leave a different
+/// mess behind. A real save runs straight through them; the durability tests
+/// stop at one and assert the ledger on disk is still the old one, intact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SavePhase {
+    /// Part of the payload is in the temp file and the rest never arrives.
+    PartiallyWritten,
+    /// The temp file is complete and synced, but the swap hasn't happened.
+    BeforeRename,
+}
+
 /// Default staleness threshold used by `tend()` when the caller doesn't
 /// override it: 10 minutes.
 pub const DEFAULT_STALE_THRESHOLD: Duration = Duration::minutes(10);
@@ -352,10 +365,75 @@ impl Store {
         self.history.iter().filter(|r| r.channel_id == channel_id).collect()
     }
 
-    /// Persist the whole store to `path` as JSON.
+    /// Persist the whole store to `path` as JSON, atomically.
+    ///
+    /// A ledger that loses its own state is worse than no ledger, so this
+    /// never writes into the live file. It writes a complete copy to a temp
+    /// file beside it, flushes that copy to disk, and renames it over the
+    /// target. A crash at any point leaves either the previous ledger or the
+    /// new one on disk — never a truncated or half-written mixture.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), EntmootError> {
+        self.save_with_hook(path.as_ref(), |_| Ok(()))
+    }
+
+    /// The real save, with a hook run at each durability checkpoint.
+    ///
+    /// `save` passes a hook that does nothing. Tests pass one that fails at a
+    /// chosen [`SavePhase`], which is how the crash windows this function
+    /// exists to close are exercised without actually killing the process.
+    fn save_with_hook(
+        &self,
+        path: &Path,
+        mut hook: impl FnMut(SavePhase) -> Result<(), EntmootError>,
+    ) -> Result<(), EntmootError> {
         let json = serde_json::to_vec_pretty(self)?;
-        std::fs::write(path, json)?;
+
+        // The temp file must live in the target's own directory: `rename` is
+        // only atomic within a filesystem, and a sibling path is the only
+        // placement guaranteed to be on the same one.
+        let dir = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+
+        // NamedTempFile unlinks itself on drop, so every `?` below cleans up
+        // its own temp file on the way out — including the hook's failures.
+        let mut tmp = NamedTempFile::new_in(dir)?;
+
+        // Written in two chunks so there is a real window in which the temp
+        // file holds a partial payload — that is the state a crash would
+        // leave behind, and the hook lets a test stop exactly there.
+        let (head, tail) = json.split_at(json.len() / 2);
+        tmp.write_all(head)?;
+        hook(SavePhase::PartiallyWritten)?;
+        tmp.write_all(tail)?;
+
+        // Push the bytes out of the page cache before the rename. Without
+        // this, the rename can be durable while the contents it points at are
+        // not, which turns a crash into a zero-length ledger.
+        tmp.as_file().sync_all()?;
+
+        // Replacing an existing ledger keeps that ledger's permissions; a
+        // brand new one keeps the temp file's restrictive default.
+        match std::fs::metadata(path) {
+            Ok(meta) => tmp.as_file().set_permissions(meta.permissions())?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+
+        hook(SavePhase::BeforeRename)?;
+
+        // Atomic on POSIX: a concurrent reader sees the old ledger or the new
+        // one, never an intermediate.
+        tmp.persist(path).map_err(|e| EntmootError::Io(e.error))?;
+
+        // The rename is a change to the *directory*, and that change is only
+        // durable once the directory itself is synced. Skipping this can
+        // resurrect the pre-save ledger after a power loss even though the
+        // rename returned successfully.
+        #[cfg(unix)]
+        std::fs::File::open(dir)?.sync_all()?;
+
         Ok(())
     }
 
@@ -369,6 +447,127 @@ impl Store {
         let bytes = std::fs::read(path)?;
         let store: Store = serde_json::from_slice(&bytes)?;
         Ok(store)
+    }
+}
+
+/// Durability tests for [`Store::save`].
+///
+/// These live in-crate rather than in `tests/integration.rs` because they
+/// drive `save_with_hook`, the private seam that stands in for a crash. The
+/// alternative — exposing fault injection on the public API — would put a
+/// test-only escape hatch in front of every consumer of the crate.
+#[cfg(test)]
+mod durability {
+    use super::*;
+
+    fn at(seconds: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::UNIX_EPOCH + Duration::seconds(seconds)
+    }
+
+    /// A ledger that is already on disk and already trusted.
+    fn planted() -> Store {
+        let mut store = Store::new();
+        store.water("chan-1", "general", Message::new(1, at(0), "lina", "first"));
+        store
+    }
+
+    /// A later state of that same ledger, mid-save.
+    fn grown() -> Store {
+        let mut store = planted();
+        store.water("chan-1", "general", Message::new(2, at(10), "ari", "second"));
+        store.prune("chan-1", 1, Disposition::Done).unwrap();
+        store
+    }
+
+    fn crash_at(phase: SavePhase) -> impl FnMut(SavePhase) -> Result<(), EntmootError> {
+        move |reached| {
+            if reached == phase {
+                Err(EntmootError::Io(std::io::Error::other("simulated crash")))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// The invariant the whole atomic-save exercise exists for: a save that
+    /// dies partway through must not damage the ledger that was already
+    /// there. Checked at both crash windows — payload half-written, and
+    /// payload complete but not yet swapped in.
+    #[test]
+    fn interrupted_save_leaves_the_previous_ledger_byte_identical() {
+        for phase in [SavePhase::PartiallyWritten, SavePhase::BeforeRename] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("entmoot-state.json");
+
+            planted().save(&path).unwrap();
+            let before = std::fs::read(&path).unwrap();
+
+            let err = grown().save_with_hook(&path, crash_at(phase)).unwrap_err();
+            assert!(matches!(err, EntmootError::Io(_)), "unexpected error at {phase:?}: {err}");
+
+            // Not truncated, not partially overwritten, not zero-length.
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                before,
+                "ledger on disk was damaged by a save that failed at {phase:?}"
+            );
+
+            // And it still loads as the pre-save state, not something that
+            // merely happens to be valid JSON.
+            let reloaded = Store::load(&path).unwrap();
+            assert_eq!(reloaded.channel_count(), 1);
+            assert_eq!(reloaded.branch("chan-1").unwrap().message_count, 1);
+            assert_eq!(reloaded.branch("chan-1").unwrap().earliest_unpruned().unwrap().id, 1);
+            assert!(reloaded.history().is_empty());
+
+            // The failed save cleaned up after itself.
+            let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            assert_eq!(leftovers, vec![path.clone()], "save that failed at {phase:?} left files behind");
+        }
+    }
+
+    /// The other half of the invariant: when the save does not crash, it
+    /// really does replace the ledger — the test above is not passing merely
+    /// because `save` never writes anything.
+    #[test]
+    fn completed_save_replaces_the_ledger_and_leaves_no_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entmoot-state.json");
+
+        planted().save(&path).unwrap();
+        grown().save(&path).unwrap();
+
+        let reloaded = Store::load(&path).unwrap();
+        assert_eq!(reloaded.branch("chan-1").unwrap().message_count, 2);
+        assert_eq!(reloaded.branch("chan-1").unwrap().earliest_unpruned().unwrap().id, 2);
+        assert_eq!(reloaded.history().len(), 1);
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(entries, vec![path]);
+    }
+
+    /// Saving through a temp file must not quietly re-permission the ledger.
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_the_permissions_of_an_existing_ledger() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entmoot-state.json");
+
+        planted().save(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        grown().save(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640, "save changed the ledger's permissions");
     }
 }
 
