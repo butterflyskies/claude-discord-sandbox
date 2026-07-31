@@ -52,6 +52,16 @@ enum Command {
     },
     /// Show prune history, optionally filtered to one channel.
     History { channel_id: Option<ChannelId> },
+    /// Show lag log — pipeline stage timestamps for post-hoc analysis.
+    /// Optionally filtered to one channel or one message.
+    Lag {
+        /// Filter to a specific channel.
+        #[arg(long)]
+        channel: Option<ChannelId>,
+        /// Filter to a specific message id.
+        #[arg(long)]
+        message: Option<u64>,
+    },
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -150,6 +160,23 @@ fn main() -> anyhow::Result<()> {
                     "[{}] up to {} — {} at {}",
                     r.channel_id, r.message_id, r.disposition, r.pruned_at
                 );
+            }
+        }
+        Command::Lag { channel, message } => {
+            let entries: Vec<_> = match (&channel, message) {
+                (_, Some(msg_id)) => store.lag_log_for_message(msg_id).into_iter().cloned().collect(),
+                (Some(ch), None) => store.lag_log_for(&ch.to_string()).into_iter().cloned().collect(),
+                (None, None) => store.lag_log().to_vec(),
+            };
+            if entries.is_empty() {
+                println!("no lag entries.");
+            } else {
+                for e in &entries {
+                    println!(
+                        "[{}] msg {} — {} at {}",
+                        e.channel_id, e.message_id, e.stage, e.timestamp
+                    );
+                }
             }
         }
     }

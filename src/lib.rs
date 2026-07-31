@@ -215,6 +215,55 @@ impl Message {
 }
 
 // ====================================================================
+// Pipeline stages and lag logging
+// ====================================================================
+
+/// Named stages in the coordination pipeline. The MVP logs what exists
+/// today; future stages are defined so the schema is stable when the
+/// enrichment pipeline and classifier arrive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stage {
+    /// Message received by Entmoot (`water` call).
+    MessageReceived,
+    /// Fast classifier evaluated the message (future).
+    ClassifierDecision,
+    /// Enrichment pipeline started processing (future).
+    EnrichmentStart,
+    /// Branch/graph updated with the message.
+    GraphWrite,
+    /// Context envelope assembled for delivery (future).
+    EnvelopeAssembly,
+    /// Message + enrichment delivered to construct (future).
+    Delivery,
+    /// Prune decision applied.
+    PruneExecuted,
+}
+
+impl std::fmt::Display for Stage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Stage::MessageReceived => write!(f, "message_received"),
+            Stage::ClassifierDecision => write!(f, "classifier_decision"),
+            Stage::EnrichmentStart => write!(f, "enrichment_start"),
+            Stage::GraphWrite => write!(f, "graph_write"),
+            Stage::EnvelopeAssembly => write!(f, "envelope_assembly"),
+            Stage::Delivery => write!(f, "delivery"),
+            Stage::PruneExecuted => write!(f, "prune_executed"),
+        }
+    }
+}
+
+/// One timestamp in a message's journey through the coordination pipeline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LagEntry {
+    pub message_id: u64,
+    pub channel_id: String,
+    pub stage: Stage,
+    pub timestamp: DateTime<Utc>,
+}
+
+// ====================================================================
 // ChannelId — validated Dione channel identifier
 // ====================================================================
 
@@ -575,6 +624,9 @@ pub struct Store {
     /// Enforced at every `water()`, `load()`, and `set_max_messages_per_branch()`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_messages_per_branch: Option<usize>,
+    /// Lag timestamps at each pipeline stage, accumulated for post-hoc analysis.
+    #[serde(default)]
+    lag_log: Vec<LagEntry>,
 }
 
 impl Store {
@@ -591,6 +643,10 @@ impl Store {
     /// If [`max_messages_per_branch`](Self::set_max_messages_per_branch) is
     /// set, excess messages are evicted oldest-first after insertion.
     pub fn water(&mut self, channel_id: ChannelId, channel_name: ChannelName, message: Message) {
+        let msg_id = message.id;
+        let source_ts = message.timestamp;
+        let ch_str = channel_id.to_string();
+
         match self.branches.get_mut(&channel_id) {
             Some(branch) => {
                 branch.channel_name = channel_name;
@@ -607,6 +663,20 @@ impl Store {
                 self.branches.insert(channel_id, branch);
             }
         }
+
+        let processed_at = Utc::now();
+        self.lag_log.push(LagEntry {
+            message_id: msg_id,
+            channel_id: ch_str.clone(),
+            stage: Stage::MessageReceived,
+            timestamp: source_ts,
+        });
+        self.lag_log.push(LagEntry {
+            message_id: msg_id,
+            channel_id: ch_str,
+            stage: Stage::GraphWrite,
+            timestamp: processed_at,
+        });
     }
 
     pub fn branch(&self, channel_id: ChannelId) -> Option<&Branch> {
@@ -721,6 +791,12 @@ impl Store {
             pruned_at: now,
         };
         self.history.push(record.clone());
+        self.lag_log.push(LagEntry {
+            message_id,
+            channel_id: channel_id.to_string(),
+            stage: Stage::PruneExecuted,
+            timestamp: now,
+        });
         Ok(record)
     }
 
@@ -748,6 +824,21 @@ impl Store {
     /// Prune history for one channel, oldest first.
     pub fn history_for(&self, channel_id: ChannelId) -> Vec<&PruneRecord> {
         self.history.iter().filter(|r| r.channel_id == channel_id).collect()
+    }
+
+    /// Full lag log, in insertion order (oldest first).
+    pub fn lag_log(&self) -> &[LagEntry] {
+        &self.lag_log
+    }
+
+    /// Lag entries for a specific channel, in insertion order.
+    pub fn lag_log_for(&self, channel_id: &str) -> Vec<&LagEntry> {
+        self.lag_log.iter().filter(|e| e.channel_id == channel_id).collect()
+    }
+
+    /// Lag entries for a specific message, in insertion order.
+    pub fn lag_log_for_message(&self, message_id: u64) -> Vec<&LagEntry> {
+        self.lag_log.iter().filter(|e| e.message_id == message_id).collect()
     }
 
     /// Persist the whole store to `path` as JSON, atomically.
