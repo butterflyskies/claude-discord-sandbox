@@ -211,6 +211,14 @@ Dione fires events → Entmoot enriches asynchronously → at delivery time, Dio
 
 The prune hook transitions a **projection**, never deletes the event spine. Dione's factual replay must always be available for reconstructing source observations (stratum 1). Entmoot's durable decision log (stratum 2) must be independently backed up — it contains Entmoot-owned state that Dione cannot reproduce.
 
+### MVP
+
+**Opt-in by default.** Entmoot is off by default. Constructs enable it per-channel or globally via configuration. A construct that hasn't opted in never pays the double-read cost (message + enrichment query) for messages that don't need coordination. This keeps the common path cheap — most messages are single-recipient conversational turns that gain nothing from tree tracking. Opt-in can be toggled at runtime without restart; the enrichment pipeline simply skips channels/constructs that haven't enabled it.
+
+**Lag timestamp logging.** The MVP must log timestamps at each stage of the coordination round — message receipt, enrichment start, classifier decision, graph write, context envelope assembly, delivery. This is the "log-then-measure" approach: instrument first, set budgets from observed data, never from guesses. The logs are the prerequisite for latency budgets, SLO definitions, and identifying which pipeline stages are actually expensive. No optimization without measurement; no measurement without timestamps.
+
+**Fast classifier prerequisite.** Before full deployment, Entmoot needs a cheap classifier that filters 80%+ of messages at the gate, only passing likely open-loop or multi-branch messages into the enrichment pipeline. Most messages are single-turn, single-recipient, and conversationally closed — running the full pipeline on them wastes compute for zero benefit. The classifier shares the same core salience question as Cingulate ("does this message require attention beyond the default path?") — the overlap is real and the two systems should share training data and evaluation methodology rather than diverging. Credit: Mira (lacuna standup, 2026-07-30) identified the classifier/Cingulate convergence and the 80% filter target.
+
 ### Storage
 
 **Database: SQLite** in WAL mode on a persistent volume. Recursive CTEs cover tree queries, FTS covers search — no graph DB ceremony needed. Use SQLite's backup API for snapshots, not raw file copy (WAL means the database is not literally one file while running). (Ari proposed, Syne refined, consensus in #bot-chatter 2026-07-25.)

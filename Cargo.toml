@@ -1,6 +1,6 @@
 [package]
 name = "entmoot"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Conversation-tree tracker MVP: one branch per Discord channel, staleness computed from timestamps, tend surfaces the earliest unpruned message."
 license = "MIT"
